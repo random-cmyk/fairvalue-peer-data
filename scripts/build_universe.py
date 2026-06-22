@@ -20,6 +20,8 @@ import 대신 복제했습니다 — peer_group.py의 수집 로직이 바뀌면
     "generated_date": "YYYYMMDD",
     "generated_at_utc": "2026-06-22T07:00:00+00:00",
     "source": "FSC GetStockPriceInfo + DART extract_fs",
+    "shard_index": null,
+    "shard_count": null,
     "company_count": 2453,
     "companies": [
       {"ticker": "005930", "name": "삼성전자", "market": "KOSPI", "sector": "",
@@ -187,7 +189,12 @@ def _try_get_dart_financial_data(date: str, ticker: str) -> tuple[float, float, 
         corp = corp_list.find_by_stock_code(ticker)
         if corp is None:
             return (_NAN,) * 7
-        fs = corp.extract_fs(bgn_de=f"{date[:4]}0101")
+        # progressbar=False: tqdm 진행바를 끈다. GitHub Actions 같은
+        # 비대화형 로그 캡처 환경에서는 tqdm이 한 줄을 덮어쓰지 못하고
+        # 매 갱신마다 새 로그 줄을 찍어 (300종목 기준 약 84,000줄) 멈춘 것처럼
+        # 보이는 노이즈를 만든다. 처리 속도에는 영향 없음 (2026-06-23 확인,
+        # dart_fss 공식 문서 기준 progressbar는 출력 전용 옵션).
+        fs = corp.extract_fs(bgn_de=f"{date[:4]}0101", progressbar=False)
         frames = _collect_dart_frames(fs)
         return _extract_financial_values_from_frames(frames)
     except Exception:
@@ -233,8 +240,8 @@ def _fetch_fsc_price_universe(date: str) -> pd.DataFrame:
 
 
 def _fetch_sector_lookup(date: str, markets: list[str]) -> dict[str, str]:
-    """더 이상 호출되지 않음 - KRX 차단으로 무한 재시도(hang) 확인됨 (2026-06-22).
-    함수는 참고용으로만 남겨둠."""
+    """pykrx 최후수단 - KRX가 스크래핑을 차단하면 예외 처리되어 빈 dict 반환.
+    (2026-06-22 기준 KRX 403/400 차단 확인됨 - 정상적으로 빈 값 처리됨, 회귀 아님)"""
     sector_lookup: dict[str, str] = {}
     try:
         from pykrx import stock
@@ -253,7 +260,12 @@ def _r(v: float) -> float | None:
     return None if not _is_valid(v) else round(v, 4)
 
 
-def build_universe(date: str, limit: int | None = None) -> dict:
+def build_universe(
+    date: str,
+    limit: int | None = None,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
+) -> dict:
     markets = ["KOSPI", "KOSDAQ"]
     universe = _fetch_fsc_price_universe(date)
     if universe.empty:
@@ -266,6 +278,16 @@ def build_universe(date: str, limit: int | None = None) -> dict:
     sector_lookup: dict[str, str] = {}
 
     candidates = universe.to_dict("records")
+
+    # 병렬(matrix) 작업 분할: round-robin(매 N번째)으로 나눠서 한 샤드가
+    # FSC 정렬상 우연히 "느린" 종목만 몰려받는 편향을 막는다
+    # (2026-06-22 테스트에서 50종목 샘플=1.6s/종목, 300종목 샘플=10.4s/종목으로
+    # 큰 차이가 난 것이 정렬 편향 때문이라는 가설에 대한 대응).
+    if shard_count:
+        if shard_index is None or shard_index < 0 or shard_index >= shard_count:
+            raise ValueError(f"shard_index({shard_index})는 0~{shard_count - 1} 범위여야 합니다.")
+        candidates = candidates[shard_index::shard_count]
+
     if limit:
         candidates = candidates[:limit]
 
@@ -319,6 +341,8 @@ def build_universe(date: str, limit: int | None = None) -> dict:
         "generated_date": date,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "source": "FSC GetStockPriceInfo + DART extract_fs",
+        "shard_index": shard_index,
+        "shard_count": shard_count,
         "company_count": len(companies),
         "companies": companies,
     }
@@ -339,11 +363,13 @@ def main():
     parser.add_argument("--date", default=None, help="기준일 YYYYMMDD (기본: 최근 평일)")
     parser.add_argument("--out", default="data/peer_universe.json")
     parser.add_argument("--limit", type=int, default=None, help="테스트용 종목 수 제한")
+    parser.add_argument("--shard-index", type=int, default=None, help="병렬분할 인덱스 (0부터 시작, --shard-count와 함께 사용)")
+    parser.add_argument("--shard-count", type=int, default=None, help="병렬분할 총 개수 (GitHub Actions matrix 작업용)")
     args = parser.parse_args()
 
     date = args.date or _latest_business_date()
-    print(f"[info] 기준일: {date}, limit={args.limit}")
-    result = build_universe(date, limit=args.limit)
+    print(f"[info] 기준일: {date}, limit={args.limit}, shard={args.shard_index}/{args.shard_count}")
+    result = build_universe(date, limit=args.limit, shard_index=args.shard_index, shard_count=args.shard_count)
     print(f"[info] 수집 완료: {result['company_count']}개 종목")
 
     out_dir = os.path.dirname(args.out)
