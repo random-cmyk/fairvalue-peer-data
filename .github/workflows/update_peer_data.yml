@@ -1,0 +1,48 @@
+name: Update Peer Universe Data
+
+on:
+  schedule:
+    # 매일 07:00 UTC = 16:00 KST (평일, KRX 정규장 마감 후)
+    - cron: "0 7 * * 1-5"
+  workflow_dispatch:       # Actions 탭에서 수동 실행 가능
+    inputs:
+      limit:
+        description: "테스트용 종목 수 제한 (비워두면 전종목, 최초 1회는 5~10 권장 - GitHub 러너 IP가 FSC/DART에서 차단되는지 빠르게 확인)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # data/peer_universe.json을 같은 저장소에 커밋하기 위해 필요
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build peer universe JSON
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          FSC_DATA_API_KEY: ${{ secrets.FSC_DATA_API_KEY }}
+        run: |
+          LIMIT="${{ github.event.inputs.limit }}"
+          if [ -n "$LIMIT" ]; then
+            python scripts/build_universe.py --out data/peer_universe.json --limit "$LIMIT"
+          else
+            python scripts/build_universe.py --out data/peer_universe.json
+          fi
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/peer_universe.json
+          git diff --staged --quiet || git commit -m "chore: update peer universe data $(date -u +%Y-%m-%d)"
+          git push
