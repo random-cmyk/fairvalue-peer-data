@@ -10,6 +10,10 @@ on:
         description: "테스트용 종목 수 제한 (비워두면 전종목, 최초 1회는 5~10 권장 - GitHub 러너 IP가 FSC/DART에서 차단되는지 빠르게 확인)"
         required: false
         default: ""
+      date:
+        description: "테스트용 기준일 YYYYMMDD (비워두면 최근 평일 자동선택)"
+        required: false
+        default: ""
 
 permissions:
   contents: write   # data/peer_universe.json을 같은 저장소에 커밋하기 위해 필요
@@ -32,12 +36,12 @@ jobs:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           FSC_DATA_API_KEY: ${{ secrets.FSC_DATA_API_KEY }}
         run: |
+          ARGS=""
           LIMIT="${{ github.event.inputs.limit }}"
-          if [ -n "$LIMIT" ]; then
-            python scripts/build_universe.py --out data/peer_universe.json --limit "$LIMIT"
-          else
-            python scripts/build_universe.py --out data/peer_universe.json
-          fi
+          DATE="${{ github.event.inputs.date }}"
+          if [ -n "$LIMIT" ]; then ARGS="$ARGS --limit $LIMIT"; fi
+          if [ -n "$DATE" ]; then ARGS="$ARGS --date $DATE"; fi
+          python scripts/build_universe.py --out data/peer_universe.json $ARGS
 
       - name: Commit and push if changed
         run: |
