@@ -233,8 +233,8 @@ def _fetch_fsc_price_universe(date: str) -> pd.DataFrame:
 
 
 def _fetch_sector_lookup(date: str, markets: list[str]) -> dict[str, str]:
-    """pykrx 최후수단 - KRX가 스크래핑을 차단하면 예외 처리되어 빈 dict 반환.
-    (2026-06-22 기준 KRX 403/400 차단 확인됨 - 정상적으로 빈 값 처리됨, 회귀 아님)"""
+    """더 이상 호출되지 않음 - KRX 차단으로 무한 재시도(hang) 확인됨 (2026-06-22).
+    함수는 참고용으로만 남겨둠."""
     sector_lookup: dict[str, str] = {}
     try:
         from pykrx import stock
@@ -260,7 +260,10 @@ def build_universe(date: str, limit: int | None = None) -> dict:
         raise RuntimeError(f"FSC API가 {date} 기준 빈 유니버스를 반환했습니다 (휴장일/주말 가능성 확인).")
     universe = universe[universe["market"].isin(markets)].reset_index(drop=True)
 
-    sector_lookup = _fetch_sector_lookup(date, markets)
+    # pykrx 섹터조회는 비활성화함 (2026-06-22 GH Actions 테스트에서 KRX 차단으로
+    # 무한 재시도(hang) 발생 확인 - 예외처리로 빈 값 반환된다는 기존 가정이 틀렸음).
+    # PER/PBR/PSR/EV-EBITDA 핵심 지표에는 sector가 불필요하므로 완전히 제거.
+    sector_lookup: dict[str, str] = {}
 
     candidates = universe.to_dict("records")
     if limit:
