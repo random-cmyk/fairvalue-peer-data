@@ -1,0 +1,3 @@
+pandas>=2.0
+dart-fss>=0.4.0
+pykrx
