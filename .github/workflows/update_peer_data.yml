@@ -7,7 +7,7 @@ on:
   workflow_dispatch:       # Actions 탭에서 수동 실행 가능
     inputs:
       limit:
-        description: "테스트용 종목 수 제한 (비워두면 전종목, 최초 1회는 5~10 권장 - GitHub 러너 IP가 FSC/DART에서 차단되는지 빠르게 확인)"
+        description: "테스트용 종목 수 제한 (샤드 1개당 적용됨 - 예: 10이면 6샤드x10=60종목, 비워두면 전종목)"
         required: false
         default: ""
       date:
@@ -18,9 +18,18 @@ on:
 permissions:
   contents: write   # data/peer_universe.json을 같은 저장소에 커밋하기 위해 필요
 
+concurrency:
+  group: update-peer-universe
+  cancel-in-progress: false   # 동시 실행 시 merge 잡의 git push가 충돌하지 않도록 직렬화
+
 jobs:
-  update:
+  build-shard:
     runs-on: ubuntu-latest
+    timeout-minutes: 180   # 3시간 - 샤드 1개가 멈춰도 일일 6시간 한도 전에 실패시켜 전일 데이터를 보존
+    strategy:
+      fail-fast: false   # 샤드 하나가 실패해도 나머지 샤드를 계속 실행해 진단정보(타이밍/오류) 확보
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]   # 전종목(~2,500개)을 6등분 -> 샤드당 약 417개
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build peer universe JSON
+      - name: Build peer universe shard JSON
         env:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           FSC_DATA_API_KEY: ${{ secrets.FSC_DATA_API_KEY }}
@@ -41,7 +50,46 @@ jobs:
           DATE="${{ github.event.inputs.date }}"
           if [ -n "$LIMIT" ]; then ARGS="$ARGS --limit $LIMIT"; fi
           if [ -n "$DATE" ]; then ARGS="$ARGS --date $DATE"; fi
-          python scripts/build_universe.py --out data/peer_universe.json $ARGS
+          python scripts/build_universe.py \
+            --out data/peer_universe_shard_${{ matrix.shard }}.json \
+            --shard-index ${{ matrix.shard }} \
+            --shard-count 6 \
+            $ARGS
+
+      - name: Upload shard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: peer-universe-shard-${{ matrix.shard }}
+          path: data/peer_universe_shard_${{ matrix.shard }}.json
+          retention-days: 1
+          if-no-files-found: error
+
+  merge:
+    # build-shard 매트릭스 잡이 전부 성공해야만 실행됨 (기본 동작).
+    # 샤드 중 하나라도 실패하면 merge가 스킵되어 data/peer_universe.json을
+    # 커밋하지 않음 -> 1/6이 빠진 불완전한 피어그룹 데이터가 조용히 배포되는
+    # 사고를 막고, 기존 단일잡 설계의 "실패시 전일 데이터 유지" 안전동작을 보존.
+    needs: build-shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: peer-universe-shard-*
+          path: shard-artifacts
+          merge-multiple: true
+
+      - name: Merge shards into final JSON
+        run: |
+          python scripts/merge_shards.py \
+            --shard-glob "shard-artifacts/peer_universe_shard_*.json" \
+            --out data/peer_universe.json
 
       - name: Commit and push if changed
         run: |
