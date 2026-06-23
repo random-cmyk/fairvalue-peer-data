@@ -37,6 +37,7 @@ import json
 import math
 import os
 import sys
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -297,8 +298,14 @@ def build_universe(
         if i % 100 == 0 or i == total_n:
             print(f"[progress] {i}/{total_n}", flush=True)
         ticker = row["ticker"]
+        t0 = time.monotonic()
         try:
             (revenue, op_income, da, total_debt, cash, net_income, equity) = _try_get_dart_financial_data(date, ticker)
+            elapsed = time.monotonic() - t0
+            # 종목별 처리시간 로그 (2026-06-23 추가): run#7에서 샤드간 10배 시간편차가
+            # 발견됐는데 기존엔 종목 단위 타이밍이 없어 범인 종목을 특정할 수 없었음.
+            # 기능에는 영향 없는 로깅 전용 추가.
+            print(f"[timing] {ticker} {row['name']}: {elapsed:.1f}s", flush=True)
             cap_val = row["market_cap_bn"]
             price_val = row["price"]
             shares_val = row["shares_outstanding"]
@@ -334,7 +341,8 @@ def build_universe(
                 "psr": _r(psr_val), "ev_ebitda": _r(ev_ebitda_val),
             })
         except Exception as exc:
-            print(f"[warn] {ticker} 처리 실패: {exc}", file=sys.stderr)
+            elapsed = time.monotonic() - t0
+            print(f"[warn] {ticker} 처리 실패 ({elapsed:.1f}s): {exc}", file=sys.stderr)
             continue
 
     return {
